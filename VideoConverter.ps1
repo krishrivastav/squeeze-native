@@ -10,7 +10,7 @@ param([Parameter(ValueFromRemainingArguments = $true)][string[]]$InputPaths)
 # The program looks at VideoConverter.ps1 in your GitHub repo and compares
 # the $AppVersion line below with the one in the repo.
 # To publish an update: raise $AppVersion, then upload the file to GitHub.
-$AppVersion = '1.1.0'
+$AppVersion = '1.1.2'
 $UpdateRepo = 'YOUR-GITHUB-USERNAME/YOUR-REPO'   # example: 'johndoe/video-converter'
 $UpdateBranch = 'main'
 $UpdateFile = 'VideoConverter.ps1'
@@ -22,7 +22,7 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
-$AppName = 'video_convert'
+$AppName = 'Squeeze Native'
 $VideoExtensions = @(
     '.mts', '.m2ts', '.ts', '.tod', '.mod', '.trp', '.tp', '.mxf', '.vob', '.vro',
     '.mp4', '.m4v', '.mov', '.qt', '.mkv', '.avi', '.wmv', '.asf', '.flv', '.f4v',
@@ -686,7 +686,7 @@ try {
     $form.Font = $fontNormal
     $form.AllowDrop = $true
 
-    $lblTitle = New-Ctl 'System.Windows.Forms.Label' 'VC Native' 15 8 610 28
+    $lblTitle = New-Ctl 'System.Windows.Forms.Label' $AppName 15 8 610 28
     $lblTitle.Font = $fontBig
     $btnUpdate = New-Ctl 'System.Windows.Forms.Button' 'Check for updates' 635 8 130 28
     $btnUpdate.Font = $fontSmall
@@ -913,7 +913,9 @@ try {
         Check-ForUpdate $true
     })
 
-    [void]$form.ShowDialog()
+    $form.ShowInTaskbar = $true
+    # Application.Run (not ShowDialog) so the window can be restored from the taskbar
+    [System.Windows.Forms.Application]::Run($form)
 } catch {
     [void][System.Windows.Forms.MessageBox]::Show(('Something went wrong:' + "`n`n" + $_.Exception.Message), $AppName, 'OK', 'Error')
 }
