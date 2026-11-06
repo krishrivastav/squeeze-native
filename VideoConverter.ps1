@@ -1,17 +1,7 @@
 param([Parameter(ValueFromRemainingArguments = $true)][string[]]$InputPaths)
 
-# =====================================================================
-#  Video Converter  -  converts any video to YouTube-ready MP4 (H.264)
-#  Max video bitrate default: 750 KBps (= 6000 kbps)
-#  Needs FFmpeg (winget install "FFmpeg (Essentials Build)")
-# =====================================================================
-
-# ---- Update checker settings (EDIT THESE) ---------------------------
-# The program looks at VideoConverter.ps1 in your GitHub repo and compares
-# the $AppVersion line below with the one in the repo.
-# To publish an update: raise $AppVersion, then upload the file to GitHub.
-$AppVersion = '1.1.2'
-$UpdateRepo = 'YOUR-GITHUB-USERNAME/YOUR-REPO'   # example: 'johndoe/video-converter'
+$AppVersion = '1.1.4'
+$UpdateRepo = 'krishrivastav/squeeze-native'   
 $UpdateBranch = 'main'
 $UpdateFile = 'VideoConverter.ps1'
 # ---------------------------------------------------------------------
@@ -29,8 +19,8 @@ $VideoExtensions = @(
     '.webm', '.mpg', '.mpeg', '.m2v', '.3gp', '.3g2', '.ogv', '.divx', '.dv', '.rm', '.rmvb', '.wtv'
 )
 $InterlacedLikely = @('.mts', '.m2ts', '.ts', '.tod', '.mod', '.trp', '.tp', '.mpg', '.mpeg', '.m2v', '.vob', '.vro', '.mxf', '.dv')
-$PresetNames = @('veryfast', 'faster', 'medium')   # Fast, Balanced, Best quality
-# Resolution choices: 0 = automatic, -1 = keep original, otherwise the "p" value
+$PresetNames = @('veryfast', 'faster', 'medium')
+
 $ResValues = @(0, -1, 2160, 1440, 1080, 720, 480, 360)
 
 $SettingsDir = Join-Path $env:APPDATA 'VideoConverter'
@@ -46,11 +36,40 @@ $script:idx = 0
 $script:total = 0
 $script:added = @{}
 
-# ---------------------------------------------------------------------
-#  Helpers
-# ---------------------------------------------------------------------
+
 function Show-Msg([string]$text, [string]$icon = 'Information') {
-    [void][System.Windows.Forms.MessageBox]::Show($text, $AppName, 'OK', $icon)
+    if ($form) { [void][System.Windows.Forms.MessageBox]::Show($form, $text, $AppName, 'OK', $icon) }
+    else { [void][System.Windows.Forms.MessageBox]::Show($text, $AppName, 'OK', $icon) }
+}
+
+function Ask-YesNo([string]$text, [string]$icon = 'Question') {
+    if ($form) { $r = [System.Windows.Forms.MessageBox]::Show($form, $text, $AppName, 'YesNo', $icon) }
+    else { $r = [System.Windows.Forms.MessageBox]::Show($text, $AppName, 'YesNo', $icon) }
+    return ($r -eq 'Yes')
+}
+
+# Waits for a background task while keeping the window responsive
+function Wait-Task($task) {
+    while (-not $task.IsCompleted) {
+        [System.Windows.Forms.Application]::DoEvents()
+        [System.Threading.Thread]::Sleep(15)
+    }
+}
+
+# Downloads a text file without freezing the window
+function Get-WebText([string]$url, [int]$timeoutSec) {
+    Add-Type -AssemblyName System.Net.Http
+    $client = New-Object System.Net.Http.HttpClient
+    $client.Timeout = [TimeSpan]::FromSeconds($timeoutSec)
+    try {
+        $task = $client.GetStringAsync($url)
+        Wait-Task $task
+        if ($task.IsCanceled) { throw 'The connection timed out.' }
+        if ($task.IsFaulted) { throw $task.Exception.GetBaseException() }
+        return [string]$task.Result
+    } finally {
+        $client.Dispose()
+    }
 }
 
 function Quote-Arg([string]$s) {
@@ -103,22 +122,6 @@ function Ensure-Tools {
         "Otherwise open Command Prompt and type:`n" +
         "winget install `"FFmpeg (Essentials Build)`"") 'Warning'
     return $false
-}
-
-function Invoke-Capture([string]$exe, [string]$arguments) {
-    $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = $exe
-    $psi.Arguments = $arguments
-    $psi.UseShellExecute = $false
-    $psi.CreateNoWindow = $true
-    $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError = $true
-    $p = [System.Diagnostics.Process]::Start($psi)
-    $errTask = $p.StandardError.ReadToEndAsync()
-    $out = $p.StandardOutput.ReadToEnd()
-    $p.WaitForExit()
-    $p.Dispose()
-    return $out
 }
 
 function Load-Settings {
@@ -201,21 +204,20 @@ function Check-ForUpdate([bool]$silent) {
     if ($script:running) { return }
     $oldText = $lblFile.Text
     $lblFile.Text = 'Checking for updates...'
+    $btnStart.Enabled = $false
+    $btnUpdate.Enabled = $false
     [System.Windows.Forms.Application]::DoEvents()
     try {
         [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
         $url = "https://raw.githubusercontent.com/$UpdateRepo/$UpdateBranch/$UpdateFile"
-        $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 6
-        $text = $resp.Content
-        if ($text -is [byte[]]) { $text = [System.Text.Encoding]::UTF8.GetString($text) }
-        $text = [string]$text
+        $text = Get-WebText $url 8
         $m = [regex]::Match($text, '\$AppVersion\s*=\s*''([0-9][0-9.]*)''')
         if (-not $m.Success) { throw 'The version number could not be read from GitHub.' }
         $remote = [version]$m.Groups[1].Value
         $local = [version]$AppVersion
         if ($remote -gt $local) {
-            $r = [System.Windows.Forms.MessageBox]::Show("A new version ($remote) is available. You have version $local.`n`nUpdate now?", $AppName, 'YesNo', 'Question')
-            if ($r -eq 'Yes') { Install-Update $text $remote }
+            $question = "A new version ($remote) is available. You have version $local.`n`nUpdate now?"
+            if (Ask-YesNo $question) { Install-Update $text $remote }
         } elseif (-not $silent) {
             Show-Msg "You already have the newest version ($AppVersion)."
         }
@@ -224,16 +226,22 @@ function Check-ForUpdate([bool]$silent) {
             Show-Msg ('Could not check for updates.' + "`n`n" + 'Please check the internet connection and try again.' + "`n`n" + $_.Exception.Message) 'Warning'
         }
     } finally {
-        if (-not $script:running -and -not $script:exitAfter) { $lblFile.Text = $oldText }
+        if (-not $script:running -and -not $script:exitAfter) {
+            $lblFile.Text = $oldText
+            $btnStart.Enabled = $true
+            $btnUpdate.Enabled = $true
+        }
     }
 }
 
 # ---------------------------------------------------------------------
 #  Video analysis and ffmpeg command building
 # ---------------------------------------------------------------------
-function Get-VideoInfo([string]$path) {
-    $a = '-v error -show_entries format=duration,bit_rate:stream=codec_type,codec_name,width,height,field_order,bit_rate,r_frame_rate,channels -of json -i ' + (Quote-Arg $path)
-    $json = Invoke-Capture $script:ffprobe $a
+function Get-ProbeArgs([string]$path) {
+    return '-v error -show_entries format=duration,bit_rate:stream=codec_type,codec_name,width,height,field_order,bit_rate,r_frame_rate,channels -of json -i ' + (Quote-Arg $path)
+}
+
+function ConvertTo-VideoInfo([string]$json) {
     if ([string]::IsNullOrWhiteSpace($json)) { throw 'This file could not be read (it may be damaged or not a video).' }
     $info = $json | ConvertFrom-Json
     $v = @($info.streams | Where-Object { $_.codec_type -eq 'video' }) | Select-Object -First 1
@@ -395,91 +403,6 @@ function Get-UniqueOutput([string]$folder, [string]$base) {
     return $p
 }
 
-# Runs ffmpeg and keeps the window responsive while it works
-function Invoke-Ffmpeg([string]$argLine, [double]$duration, $item) {
-    $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = $script:ffmpeg
-    $psi.Arguments = $argLine
-    $psi.UseShellExecute = $false
-    $psi.CreateNoWindow = $true
-    $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError = $true
-
-    $watch = [System.Diagnostics.Stopwatch]::StartNew()
-    $proc = [System.Diagnostics.Process]::Start($psi)
-    $script:proc = $proc
-    try { $proc.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::BelowNormal } catch { }
-
-    if ($duration -le 0) { $barFile.Style = 'Marquee' } else { $barFile.Style = 'Continuous' }
-
-    $outTask = $proc.StandardOutput.ReadLineAsync()
-    $errTask = $proc.StandardError.ReadLineAsync()
-    $outEof = $false
-    $errEof = $false
-    $errLines = New-Object 'System.Collections.Generic.List[string]'
-    $curSec = 0.0
-    $speed = ''
-    $cancelled = $false
-    $name = $item.Text
-
-    while (-not $proc.HasExited -or -not $outEof -or -not $errEof) {
-        while (-not $outEof -and $outTask.IsCompleted) {
-            $line = $outTask.Result
-            if ($null -eq $line) { $outEof = $true; break }
-            if ($line -like 'out_time_us=*') { $curSec = (ConvertTo-Num $line.Substring(12)) / 1000000.0 }
-            elseif ($line -like 'out_time_ms=*') { $curSec = (ConvertTo-Num $line.Substring(12)) / 1000000.0 }
-            elseif ($line -like 'speed=*') { $speed = $line.Substring(6).Trim() }
-            $outTask = $proc.StandardOutput.ReadLineAsync()
-        }
-        while (-not $errEof -and $errTask.IsCompleted) {
-            $line = $errTask.Result
-            if ($null -eq $line) { $errEof = $true; break }
-            if ($line.Trim()) {
-                $errLines.Add($line)
-                if ($errLines.Count -gt 6) { $errLines.RemoveAt(0) }
-            }
-            $errTask = $proc.StandardError.ReadLineAsync()
-        }
-
-        if ($script:cancel -and -not $cancelled -and -not $proc.HasExited) {
-            $cancelled = $true
-            try { $proc.Kill() } catch { }
-        }
-
-        # Update the screen
-        $pct = 0.0
-        if ($duration -gt 0) { $pct = [Math]::Min(100.0, [Math]::Max(0.0, $curSec / $duration * 100.0)) }
-        $text = $name
-        if ($duration -gt 0) {
-            $barFile.Value = [int]($pct * 10)
-            $item.SubItems[2].Text = ('Converting {0:N0}%' -f $pct)
-            $text += ('  -  {0:N0}%' -f $pct)
-            if ($pct -gt 2 -and $watch.Elapsed.TotalSeconds -gt 5) {
-                $text += '  -  about ' + (Format-Eta ($watch.Elapsed.TotalSeconds * (100.0 - $pct) / $pct)) + ' left'
-            }
-        }
-        if ($speed -and $speed -ne 'N/A') { $text += "  -  speed $speed" }
-        if (-not $cancelled) { $lblFile.Text = $text }
-        $frac = (($script:idx - 1) + ($pct / 100.0)) / [Math]::Max(1, $script:total)
-        $barAll.Value = [int][Math]::Min(1000, $frac * 1000)
-
-        [System.Windows.Forms.Application]::DoEvents()
-        Start-Sleep -Milliseconds 100
-    }
-
-    $proc.WaitForExit()
-    $code = $proc.ExitCode
-    $script:proc = $null
-    $proc.Dispose()
-    $barFile.Style = 'Continuous'
-
-    return [pscustomobject]@{
-        ExitCode  = $code
-        Cancelled = $cancelled
-        Errors    = ($errLines -join ' | ')
-    }
-}
-
 # ---------------------------------------------------------------------
 #  Batch conversion
 # ---------------------------------------------------------------------
@@ -498,86 +421,237 @@ function Set-Running([bool]$on) {
     Update-SizeControls
 }
 
-function Run-Batch([string]$outDir) {
-    $script:cancel = $false
-    Set-Running $true
+# ---------------------------------------------------------------------
+#  Conversion engine
+#  A timer drives it in small steps, so the window thread is idle (and
+#  answers clicks instantly, including the taskbar) between the steps.
+# ---------------------------------------------------------------------
+$script:job = $null
+$script:phase = 'idle'      # idle, next, probing, encoding, finish
+$script:queue = @()
+$script:qpos = 0
+$script:ok = 0
+$script:failed = @()
+$script:opt = $null
+$script:outDir = ''
+$script:inTick = $false
+$script:timer = $null
 
-    $sizeMB = 0.0
-    if ($chkSize.Checked) {
-        $sizeMB = [double]$numSize.Value
-        if ($cmbUnit.SelectedIndex -eq 1) { $sizeMB = $sizeMB * 1024 }
+function New-AsyncProcess([string]$exe, [string]$argLine, [bool]$lowPriority) {
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $exe
+    $psi.Arguments = $argLine
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $p = [System.Diagnostics.Process]::Start($psi)
+    if ($lowPriority) {
+        try { $p.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::BelowNormal } catch { }
     }
-    $opt = [pscustomobject]@{
-        RateKBps  = [int]$numRate.Value
-        Preset    = $PresetNames[$cmbQuality.SelectedIndex]
-        ResHeight = $ResValues[$cmbRes.SelectedIndex]
-        SizeMB    = $sizeMB
-    }
+    return $p
+}
 
-    $items = @($lv.Items | Where-Object { $_.SubItems[2].Text -notlike 'Done*' })
-    $total = $items.Count
-    $script:total = $total
-    $ok = 0
-    $failed = @()
-    $idx = 0
-    $barAll.Value = 0
-    $barFile.Value = 0
-
-    foreach ($item in $items) {
-        if ($script:cancel) { continue }
-        $idx++
-        $script:idx = $idx
-        $src = [string]$item.Tag
-        $item.SubItems[2].Text = 'Starting...'
-        $item.EnsureVisible()
-        $lblOverall.Text = "Video $idx of $total"
-        $lblFile.Text = 'Preparing: ' + $item.Text
-        $barFile.Value = 0
-        $part = $null
-
-        try {
-            $info = Get-VideoInfo $src
-            $base = [System.IO.Path]::GetFileNameWithoutExtension($src)
-            $final = Get-UniqueOutput $outDir $base
-            $part = $final.Substring(0, $final.Length - 4) + '.part.mp4'
-
-            $plan = New-FfmpegPlan $src $part $info $opt $false
-            Write-Log ("[{0}/{1}] {2}: {3}" -f $idx, $total, $item.Text, $plan.Summary)
-            $res = Invoke-Ffmpeg $plan.Args $info.Duration $item
-
-            if (-not $res.Cancelled -and $res.ExitCode -ne 0 -and $plan.AudioCopy) {
-                Write-Log '    Audio copy did not work, trying again with audio re-encoded...'
-                Remove-Item -LiteralPath $part -Force -ErrorAction SilentlyContinue
-                $plan = New-FfmpegPlan $src $part $info $opt $true
-                $res = Invoke-Ffmpeg $plan.Args $info.Duration $item
-            }
-
-            if ($res.Cancelled) {
-                Remove-Item -LiteralPath $part -Force -ErrorAction SilentlyContinue
-                $item.SubItems[2].Text = 'Cancelled'
-                Write-Log '    Cancelled.'
-            } elseif ($res.ExitCode -eq 0 -and (Test-Path -LiteralPath $part)) {
-                Move-Item -LiteralPath $part -Destination $final -Force
-                $size = (Get-Item -LiteralPath $final).Length
-                $item.SubItems[2].Text = 'Done (' + (Format-Size $size) + ')'
-                $ok++
-                Write-Log ('    Done: ' + [System.IO.Path]::GetFileName($final) + '  (' + (Format-Size $size) + ')')
-            } else {
-                Remove-Item -LiteralPath $part -Force -ErrorAction SilentlyContinue
-                $item.SubItems[2].Text = 'FAILED'
-                $failed += $item.Text
-                Write-Log ('    FAILED: ' + $res.Errors)
-            }
-        } catch {
-            if ($part) { Remove-Item -LiteralPath $part -Force -ErrorAction SilentlyContinue }
-            $item.SubItems[2].Text = 'FAILED'
-            $failed += $item.Text
-            Write-Log ('    FAILED: ' + $_.Exception.Message)
+function Stop-JobProcesses {
+    $j = $script:job
+    if (-not $j) { return }
+    foreach ($pp in @($j.Proc, $(if ($j.Probe) { $j.Probe.Proc } else { $null }))) {
+        if ($pp) {
+            try { if (-not $pp.HasExited) { $pp.Kill() } } catch { }
         }
-        $barAll.Value = [int][Math]::Min(1000, ($idx / [Math]::Max(1, $total)) * 1000)
+    }
+}
+
+function End-Item {
+    $barAll.Value = [int][Math]::Min(1000, ($script:idx / [Math]::Max(1, $script:total)) * 1000)
+    $script:job = $null
+    $script:phase = 'next'
+}
+
+function Fail-Item([string]$msg) {
+    $j = $script:job
+    if ($j) {
+        Stop-JobProcesses
+        $barFile.Style = 'Continuous'
+        if ($j.Part) { Remove-Item -LiteralPath $j.Part -Force -ErrorAction SilentlyContinue }
+        $j.Item.SubItems[2].Text = 'FAILED'
+        $script:failed += $j.Item.Text
+    }
+    Write-Log ('    FAILED: ' + $msg)
+    End-Item
+}
+
+function Cancel-Item {
+    $j = $script:job
+    if ($j) {
+        Stop-JobProcesses
+        $barFile.Style = 'Continuous'
+        if ($j.Part) { Remove-Item -LiteralPath $j.Part -Force -ErrorAction SilentlyContinue }
+        $j.Item.SubItems[2].Text = 'Cancelled'
+        Write-Log '    Cancelled.'
+    }
+    $script:job = $null
+    $script:phase = 'finish'
+}
+
+function Start-NextItem {
+    if ($script:cancel -or $script:qpos -ge $script:queue.Count) {
+        $script:phase = 'finish'
+        return
+    }
+    $item = $script:queue[$script:qpos]
+    $script:qpos++
+    $script:idx = $script:qpos
+    $item.SubItems[2].Text = 'Starting...'
+    $item.EnsureVisible()
+    $lblOverall.Text = ('Video {0} of {1}' -f $script:idx, $script:total)
+    $lblFile.Text = 'Preparing: ' + $item.Text
+    $barFile.Value = 0
+    $script:job = @{ Item = $item; Src = [string]$item.Tag; Part = $null; Final = $null; Retried = $false; Info = $null; Plan = $null; Proc = $null; Probe = $null }
+    try {
+        $p = New-AsyncProcess $script:ffprobe (Get-ProbeArgs $script:job.Src) $false
+        $script:job.Probe = @{ Proc = $p; Out = $p.StandardOutput.ReadToEndAsync(); Err = $p.StandardError.ReadToEndAsync() }
+        $script:phase = 'probing'
+    } catch {
+        Fail-Item $_.Exception.Message
+    }
+}
+
+function Start-Encode([bool]$forceAudio) {
+    $j = $script:job
+    $plan = New-FfmpegPlan $j.Src $j.Part $j.Info $script:opt $forceAudio
+    $j.Plan = $plan
+    if ($forceAudio) {
+        Write-Log '    Audio copy did not work, trying again with audio re-encoded...'
+    } else {
+        Write-Log ('[{0}/{1}] {2}: {3}' -f $script:idx, $script:total, $j.Item.Text, $plan.Summary)
+    }
+    $p = New-AsyncProcess $script:ffmpeg $plan.Args $true
+    $j.Proc = $p
+    $j.OutTask = $p.StandardOutput.ReadLineAsync()
+    $j.ErrTask = $p.StandardError.ReadLineAsync()
+    $j.OutEof = $false
+    $j.ErrEof = $false
+    $j.ErrLines = New-Object 'System.Collections.Generic.List[string]'
+    $j.CurSec = 0.0
+    $j.Speed = ''
+    $j.Cancelled = $false
+    $j.Duration = [double]$j.Info.Duration
+    $j.Watch = [System.Diagnostics.Stopwatch]::StartNew()
+    if ($j.Duration -le 0) { $barFile.Style = 'Marquee' } else { $barFile.Style = 'Continuous' }
+    $script:phase = 'encoding'
+}
+
+function Poll-Probe {
+    $j = $script:job
+    if ($script:cancel) { Cancel-Item; return }
+    $pr = $j.Probe
+    if (-not ($pr.Out.IsCompleted -and $pr.Err.IsCompleted)) { return }
+    $json = $pr.Out.Result
+    try { $pr.Proc.Dispose() } catch { }
+    $j.Probe = $null
+    try {
+        $j.Info = ConvertTo-VideoInfo $json
+        $base = [System.IO.Path]::GetFileNameWithoutExtension($j.Src)
+        $j.Final = Get-UniqueOutput $script:outDir $base
+        $j.Part = $j.Final.Substring(0, $j.Final.Length - 4) + '.part.mp4'
+        Start-Encode $false
+    } catch {
+        Fail-Item $_.Exception.Message
+    }
+}
+
+function Complete-Encode {
+    $j = $script:job
+    $proc = $j.Proc
+    $proc.WaitForExit()
+    $code = $proc.ExitCode
+    $proc.Dispose()
+    $j.Proc = $null
+    $barFile.Style = 'Continuous'
+    $errors = ($j.ErrLines -join ' | ')
+
+    if ($j.Cancelled) { Cancel-Item; return }
+
+    if ($code -eq 0 -and (Test-Path -LiteralPath $j.Part)) {
+        Move-Item -LiteralPath $j.Part -Destination $j.Final -Force
+        $size = (Get-Item -LiteralPath $j.Final).Length
+        $j.Item.SubItems[2].Text = 'Done (' + (Format-Size $size) + ')'
+        $script:ok++
+        Write-Log ('    Done: ' + [System.IO.Path]::GetFileName($j.Final) + '  (' + (Format-Size $size) + ')')
+        End-Item
+        return
     }
 
+    if ($j.Plan.AudioCopy -and -not $j.Retried) {
+        Remove-Item -LiteralPath $j.Part -Force -ErrorAction SilentlyContinue
+        $j.Retried = $true
+        Start-Encode $true
+        return
+    }
+
+    Fail-Item $errors
+}
+
+function Poll-Encode {
+    $j = $script:job
+    $proc = $j.Proc
+
+    # Read whatever ffmpeg has reported so far
+    while (-not $j.OutEof -and $j.OutTask.IsCompleted) {
+        $line = $j.OutTask.Result
+        if ($null -eq $line) { $j.OutEof = $true; break }
+        if ($line -like 'out_time_us=*') { $j.CurSec = (ConvertTo-Num $line.Substring(12)) / 1000000.0 }
+        elseif ($line -like 'out_time_ms=*') { $j.CurSec = (ConvertTo-Num $line.Substring(12)) / 1000000.0 }
+        elseif ($line -like 'speed=*') { $j.Speed = $line.Substring(6).Trim() }
+        $j.OutTask = $proc.StandardOutput.ReadLineAsync()
+    }
+    while (-not $j.ErrEof -and $j.ErrTask.IsCompleted) {
+        $line = $j.ErrTask.Result
+        if ($null -eq $line) { $j.ErrEof = $true; break }
+        if ($line.Trim()) {
+            $j.ErrLines.Add($line)
+            if ($j.ErrLines.Count -gt 6) { $j.ErrLines.RemoveAt(0) }
+        }
+        $j.ErrTask = $proc.StandardError.ReadLineAsync()
+    }
+
+    # Cancel pressed
+    if ($script:cancel -and -not $j.Cancelled -and -not $proc.HasExited) {
+        $j.Cancelled = $true
+        try { $proc.Kill() } catch { }
+    }
+
+    # Update the screen
+    $pct = 0.0
+    if ($j.Duration -gt 0) { $pct = [Math]::Min(100.0, [Math]::Max(0.0, $j.CurSec / $j.Duration * 100.0)) }
+    $text = $j.Item.Text
+    if ($j.Duration -gt 0) {
+        $barFile.Value = [int]($pct * 10)
+        $j.Item.SubItems[2].Text = ('Converting {0:N0}%' -f $pct)
+        $text += ('  -  {0:N0}%' -f $pct)
+        if ($pct -gt 2 -and $j.Watch.Elapsed.TotalSeconds -gt 5) {
+            $text += '  -  about ' + (Format-Eta ($j.Watch.Elapsed.TotalSeconds * (100.0 - $pct) / $pct)) + ' left'
+        }
+    }
+    if ($j.Speed -and $j.Speed -ne 'N/A') { $text += ('  -  speed ' + $j.Speed) }
+    if (-not $j.Cancelled) { $lblFile.Text = $text }
+    $frac = (($script:idx - 1) + ($pct / 100.0)) / [Math]::Max(1, $script:total)
+    $barAll.Value = [int][Math]::Min(1000, $frac * 1000)
+
+    # Finished?
+    if ($proc.HasExited -and $j.OutEof -and $j.ErrEof) { Complete-Encode }
+}
+
+function Finish-Batch {
+    $script:timer.Stop()
+    $script:phase = 'idle'
     $wasCancelled = $script:cancel
+    $ok = $script:ok
+    $total = $script:total
+    $failed = $script:failed
+    $outDir = $script:outDir
+
     Set-Running $false
     $barFile.Value = 0
     $lblFile.Text = 'Ready'
@@ -603,11 +677,61 @@ function Run-Batch([string]$outDir) {
     }
     if ($ok -gt 0) {
         $msg += "`n`nOpen the folder with the converted videos?"
-        $r = [System.Windows.Forms.MessageBox]::Show($msg, $AppName, 'YesNo', 'Information')
-        if ($r -eq 'Yes') { Start-Process -FilePath $outDir }
+        if (Ask-YesNo $msg 'Information') { Start-Process -FilePath $outDir }
     } else {
         Show-Msg $msg 'Warning'
     }
+}
+
+function Invoke-Tick {
+    if ($script:inTick) { return }
+    $script:inTick = $true
+    try {
+        switch ($script:phase) {
+            'next' { Start-NextItem }
+            'probing' { Poll-Probe }
+            'encoding' { Poll-Encode }
+            'finish' { Finish-Batch }
+        }
+    } catch {
+        if (@('finish', 'idle') -contains $script:phase) {
+            try { $script:timer.Stop() } catch { }
+            try { Set-Running $false } catch { }
+        } else {
+            try { Fail-Item $_.Exception.Message } catch { }
+        }
+    } finally {
+        $script:inTick = $false
+    }
+}
+
+function Run-Batch([string]$outDir) {
+    $script:cancel = $false
+    Set-Running $true
+
+    $sizeMB = 0.0
+    if ($chkSize.Checked) {
+        $sizeMB = [double]$numSize.Value
+        if ($cmbUnit.SelectedIndex -eq 1) { $sizeMB = $sizeMB * 1024 }
+    }
+    $script:opt = [pscustomobject]@{
+        RateKBps  = [int]$numRate.Value
+        Preset    = $PresetNames[$cmbQuality.SelectedIndex]
+        ResHeight = $ResValues[$cmbRes.SelectedIndex]
+        SizeMB    = $sizeMB
+    }
+    $script:outDir = $outDir
+    $script:queue = @($lv.Items | Where-Object { $_.SubItems[2].Text -notlike 'Done*' })
+    $script:total = $script:queue.Count
+    $script:qpos = 0
+    $script:idx = 0
+    $script:ok = 0
+    $script:failed = @()
+    $script:job = $null
+    $barAll.Value = 0
+    $barFile.Value = 0
+    $script:phase = 'next'
+    $script:timer.Start()
 }
 
 # ---------------------------------------------------------------------
@@ -804,6 +928,10 @@ try {
 
     Update-SizeControls
 
+    $script:timer = New-Object System.Windows.Forms.Timer
+    $script:timer.Interval = 120
+    $script:timer.Add_Tick({ Invoke-Tick })
+
     # --- events ---
     $chkSize.Add_CheckedChanged({ Update-SizeControls })
 
@@ -896,8 +1024,7 @@ try {
 
     $form.Add_FormClosing({
         if ($script:running) {
-            $r = [System.Windows.Forms.MessageBox]::Show('A conversion is still running. Stop it and close the program?', $AppName, 'YesNo', 'Question')
-            if ($r -eq 'Yes') {
+            if (Ask-YesNo 'A conversion is still running. Stop it and close the program?') {
                 $script:exitAfter = $true
                 $script:cancel = $true
             }
