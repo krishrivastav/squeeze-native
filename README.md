@@ -92,19 +92,7 @@ Tick **Make every video about this size** and enter a size. For each video, the 
 
 ## Updates
 
-The app checks this repository when it starts, and the **Check for updates** button does it on demand. If the version number in the repository is higher, it asks whether to update. Saying yes downloads the new `VideoConverter.ps1`, keeps the old one as `VideoConverter.ps1.bak`, and restarts the app. If you are offline, the automatic check does nothing.
-
-### For the maintainer
-
-Open `VideoConverter.ps1` in Notepad and set these lines near the top:
-
-```powershell
-$AppVersion = '1.1.2'
-$UpdateRepo = 'YOUR-GITHUB-USERNAME/YOUR-REPO'
-$UpdateBranch = 'main'
-```
-
-To release an update, raise `$AppVersion`, then upload the file to the repository. The repository must be **public**, because the app reads the raw file without signing in. If you rename `VideoConverter.ps1`, also change `$UpdateFile` and the file name inside `Start Converter.bat`.
+The app checks this repository when it starts, and the **Check for updates** button does it on demand.
 
 ## Where settings are stored
 
